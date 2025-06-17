@@ -18,9 +18,12 @@ setwd("~/EEID-PREDICT-Shallow")
 
 
 ```{r cars}
-#install.packages("devtools")    
-#devtools::install_github("benjjneb/dada2")
-library(dada2)
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(version = "3.21")
+BiocManager::install("dada2", force = TRUE)
+packageVersion("dada2")
+
 
 #install.packages("dplyr")
 library(dplyr)
@@ -53,7 +56,7 @@ length(list.files(path))
 
 If the package successfully loaded and your listed files match those here, you are ready to go through the DADA2 pipeline.
 
-
+#Set sample.names
 Now we read in the names of the fastq files, and perform some string manipulation to get matched lists of the forward and reverse fastq files.
 ```{r}
 # Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
@@ -67,12 +70,12 @@ fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
   #This code splits the basename using "_" and then concatenates the first and second elements with "_" as the separator. If there is only one element in the split result, it returns that element as is.
 sample.names <- sapply(strsplit(basename(fnFs), "_"), function(x) ifelse(length(x) > 1, paste(x[1], x[2], sep = "_"), x))
 
-write.csv(sample.names, file = "sample_names.csv")
+#write.csv(sample.names, file = "sample_names.csv") #only need to do once
 ```
 
 
 ##################################################################################################################
-Inspect read quality profiles
+#Inspect read quality profiles
 
 We start by visualizing the quality profiles of the forward reads:
 ```{r}
@@ -83,18 +86,18 @@ We start by visualizing the quality profiles of the forward reads:
 # Ben's post says, "You also want to truncate each read at 250 nts or less to avoid reading into the opposite primer and the adapter sequence after it."
 # I think that if this is not a long enough trim, I will see that after merging.
 
-plotQualityProfile(fnFs[4:5]) 
-plotQualityProfile(fnFs[49:50]) 
-plotQualityProfile(fnFs[35:36]) 
-
-plotQualityProfile(fnRs[4:5]) 
-plotQualityProfile(fnRs[49:50]) 
-plotQualityProfile(fnRs[35:36]) 
+# plotQualityProfile(fnFs[4:5]) 
+# plotQualityProfile(fnFs[49:50]) 
+# plotQualityProfile(fnFs[35:36]) 
+# 
+# plotQualityProfile(fnRs[4:5]) 
+# plotQualityProfile(fnRs[49:50]) 
+# plotQualityProfile(fnRs[35:36]) 
 
 ```
 
 ###########################################################################################################
-Filter and trim
+#Filter and trim (out object)
 
 Assign the filenames for the filtered fastq.gz files.
 ```{r}
@@ -115,9 +118,48 @@ Error refers to the quality score in the fastQ file. So EE is expected errors ba
 out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(250,250),
               maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
               compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
+#this took ~10 min on poseidon
 head(out)
 ```
+save(out, file="~/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
+load("~/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
 
+
+
+###########################################################################################################
+#Learn the Error Rates
+
+So this is where things will be different from previous dada2 pipelines I've done, because quality scores are binned with MiSeq i1000
+See this discussion: 
+https://github.com/benjjneb/dada2/issues/1307
+
+On Dec 5, 2024, Ben wrote that there is now binnedQualErrfun that can't be used with learnErrors. binnedQualErrfun requires a vector of binned quality scores -- meaning, I have to manually tell binnedQualErrfun which intervals MiSeq i100 used to bin the quality scores. According to illumina, the intervals are at 2, 12, 24, and 38. 
+See illumina website: https://knowledge.illumina.com/instrumentation/miseq-i100-series/instrumentation-miseq-i100-series-reference_material-list/000009540 
+
+```{r}
+binnedQs <- c(2, 12, 24, 38) #bins from illumina
+binnedQualErrfun <- makeBinnedQualErrfun(binnedQs)
+learnErrors(filtFs, errorEstimationFunction=binnedQualErrfun, multi=TRUE)
+learnErrors(filtRs, errorEstimationFunction=binnedQualErrfun, multi=TRUE)
+
+plotErrors(errF, nominalQ=TRUE)
+
+```
+save(errF, file="~/EEID-PREDICT-Shallow/errF.RData")
+save(errR, file="~/EEID-PREDICT-Shallow/errR.RData")
+
+load("~/EEID-PREDICT-Shallow/errF.RData")
+load("~/EEID-PREDICT-Shallow/errR.RData")
+
+
+###########################################################################################################
+#Sample Inference
+- We are now ready to apply the core sample inference algorithm to the filtered and trimmed sequence data.
+- see: https://www.nature.com/articles/nmeth.3869#methods
+```{r}
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+dadaFs[[1]]
+```
 
 
 
