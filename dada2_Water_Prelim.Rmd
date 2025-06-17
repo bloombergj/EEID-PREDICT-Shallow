@@ -13,18 +13,26 @@ Check active job using: sacct
 
 #Set up
 ```{r setup, include=FALSE}
-setwd("~/EEID-PREDICT-Shallow")
+#setwd("~/EEID-PREDICT-Shallow")
+setwd("~/Documents/WHOI/Projects/EEID-PREDICT-Shallow")
 ```
 
 
-```{r cars}
+```{r}
 if (!require("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
-BiocManager::install(version = "3.21")
-BiocManager::install("dada2", force = TRUE)
+
+# The following initializes usage of Bioc devel
+BiocManager::install(version='devel')
+
+BiocManager::install("dada2")
+
+library("dada2")
 packageVersion("dada2")
+```
 
 
+```{r}
 #install.packages("dplyr")
 library(dplyr)
 
@@ -38,7 +46,7 @@ library(data.table)
 
 Define the following path variable so that it points to the extracted directory on your machine:
 ```{r}
-path <-  "/vortexfs1/home/jeanne.bloomberg/EEID_water_Fastq" 
+path <-  "~/Documents/WHOI/Projects/EEID/FastQ" 
 #CHANGE ME to the directory containing the fastq files after unzipping.
 
 #TOTAL READS using "zcat *fastq.gz | echo $((`wc -l`/4))": 39985368 reads
@@ -122,7 +130,25 @@ out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(250,250),
 head(out)
 ```
 save(out, file="~/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
-load("~/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
+#load("~/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
+load("~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
+
+
+###########################################################################################################
+#Dereplication
+
+ok there are some people on the internet doing dereplication before learn errors. This seems to be necessary, because when I went straight to learnErrors, I got the error: 
+    Error in derepFastq(fls[[i]], qualityType = qualityType) : 
+      Not all provided files exist.
+In this issue, someone did derepFastq before learnError. I'll see if it works for me, even though this person has an active question too. https://github.com/benjjneb/dada2/issues/1892
+
+```{r}
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+```
 
 
 
@@ -133,16 +159,25 @@ So this is where things will be different from previous dada2 pipelines I've don
 See this discussion: 
 https://github.com/benjjneb/dada2/issues/1307
 
-On Dec 5, 2024, Ben wrote that there is now binnedQualErrfun that can't be used with learnErrors. binnedQualErrfun requires a vector of binned quality scores -- meaning, I have to manually tell binnedQualErrfun which intervals MiSeq i100 used to bin the quality scores. According to illumina, the intervals are at 2, 12, 24, and 38. 
+On Dec 5, 2024, Ben wrote that there is now makeBinnedQualErrfun that can't be used with learnErrors. makeBinnedQualErrfun requires a vector of binned quality scores -- meaning, I have to manually tell makeBinnedQualErrfun which intervals MiSeq i100 used to bin the quality scores. According to illumina, the intervals are at 2, 12, 24, and 38. 
 See illumina website: https://knowledge.illumina.com/instrumentation/miseq-i100-series/instrumentation-miseq-i100-series-reference_material-list/000009540 
 
+
 ```{r}
-binnedQs <- c(2, 12, 24, 38) #bins from illumina
+binnedQs <- c(2, 12, 24, 40)
 binnedQualErrfun <- makeBinnedQualErrfun(binnedQs)
-learnErrors(filtFs, errorEstimationFunction=binnedQualErrfun, multi=TRUE)
-learnErrors(filtRs, errorEstimationFunction=binnedQualErrfun, multi=TRUE)
+
+errF <-learnErrors(filtFs, errorEstimationFunction=binnedQualErrfun, multi=FALSE)
+# 123698250 total bases in 494793 reads from 2 samples will be used for learning the error rates.
+
+errR <-learnErrors(filtRs, errorEstimationFunction=binnedQualErrfun, multi=FALSE)
+# 123698250 total bases in 494793 reads from 2 samples will be used for learning the error rates.
 
 plotErrors(errF, nominalQ=TRUE)
+
+save(errF, file="~/EEID-PREDICT-Shallow/errF.RData")
+save(errR, file="~/EEID-PREDICT-Shallow/errR.RData")
+
 
 ```
 save(errF, file="~/EEID-PREDICT-Shallow/errF.RData")
