@@ -1,0 +1,124 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Note on using HPC and adjusting setting of sbatch: 
+If I want to edit the slurm run parameters, I can add them in the command line to override the ones in the .sh file:
+sbatch --cpus-per-task=4 --mem=64gb --time=03:10:00 /proj/omics/bioinfo/scripts/slurm/singularity_launch_rstudio.sh
+
+Check active job using: sacct
+
+
+#Set up
+```{r setup, include=FALSE}
+setwd("~/EEID-PREDICT-Shallow")
+```
+
+
+```{r cars}
+#install.packages("devtools")    
+#devtools::install_github("benjjneb/dada2")
+library(dada2)
+
+#install.packages("dplyr")
+library(dplyr)
+
+#install.packages("data.table")
+library(data.table)
+
+```
+
+##################################################################################################################
+
+
+Define the following path variable so that it points to the extracted directory on your machine:
+```{r}
+path <-  "/vortexfs1/home/jeanne.bloomberg/EEID_water_Fastq" 
+#CHANGE ME to the directory containing the fastq files after unzipping.
+
+#TOTAL READS using "zcat *fastq.gz | echo $((`wc -l`/4))": 39985368 reads
+```
+
+
+Count the number of files
+Note -- you can count the number of files in a directory in unix with: "ls -1 | wc -l"
+```{r}
+list.files(path)
+length(list.files(path))
+  #232 -- perfect bc there are 116 samples, and 116*2=232
+
+```
+
+If the package successfully loaded and your listed files match those here, you are ready to go through the DADA2 pipeline.
+
+
+Now we read in the names of the fastq files, and perform some string manipulation to get matched lists of the forward and reverse fastq files.
+```{r}
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+
+# Extract sample names
+# Because I have underscores in my basename, I needed to change the code from the tutorial, which I had ChatGpt do. 
+  # From tutorial: sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+#ChatGPT explanation of the following code: 
+  #This code splits the basename using "_" and then concatenates the first and second elements with "_" as the separator. If there is only one element in the split result, it returns that element as is.
+sample.names <- sapply(strsplit(basename(fnFs), "_"), function(x) ifelse(length(x) > 1, paste(x[1], x[2], sep = "_"), x))
+
+write.csv(sample.names, file = "sample_names.csv")
+```
+
+
+##################################################################################################################
+Inspect read quality profiles
+
+We start by visualizing the quality profiles of the forward reads:
+```{r}
+# Good to look at a few different types of samples to see the read qualities
+# I think there are so many reads per sample, that they are all good! Ben said at STAMPS that he usually trims 5 in this situation. 
+# But these are 300 nt reads, so I think I need to trim as per this discussion: 
+# https://github.com/benjjneb/dada2/issues/761
+# Ben's post says, "You also want to truncate each read at 250 nts or less to avoid reading into the opposite primer and the adapter sequence after it."
+# I think that if this is not a long enough trim, I will see that after merging.
+
+plotQualityProfile(fnFs[4:5]) 
+plotQualityProfile(fnFs[49:50]) 
+plotQualityProfile(fnFs[35:36]) 
+
+plotQualityProfile(fnRs[4:5]) 
+plotQualityProfile(fnRs[49:50]) 
+plotQualityProfile(fnRs[35:36]) 
+
+```
+
+###########################################################################################################
+Filter and trim
+
+Assign the filenames for the filtered fastq.gz files.
+```{r}
+# Place filtered files in filtered/ subdirectory
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+
+
+We’ll use standard filtering parameters: maxN=0 (DADA2 requires no Ns), truncQ=2, rm.phix=TRUE and maxEE=2. The maxEE parameter sets the maximum number of “expected errors” allowed in a read, which is a better filter than simply averaging quality scores.
+
+N means the Illumina couldn't figure out the base call.
+Error refers to the quality score in the fastQ file. So EE is expected errors based on the quality score.
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(250,250),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
+head(out)
+```
+
+
+
+
+
