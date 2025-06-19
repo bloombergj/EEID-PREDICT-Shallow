@@ -19,16 +19,16 @@ setwd("~/Documents/WHOI/Projects/EEID-PREDICT-Shallow")
 
 
 ```{r}
-if (!require("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-
-# The following initializes usage of Bioc devel
-BiocManager::install(version='devel')
-
-BiocManager::install("dada2")
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# # The following initializes usage of Bioc devel
+# BiocManager::install(version='devel')
+# 
+# BiocManager::install("dada2")
 
 library("dada2")
-packageVersion("dada2")
+packageVersion("dada2") #need 1.37
 ```
 
 
@@ -126,30 +126,13 @@ Error refers to the quality score in the fastQ file. So EE is expected errors ba
 out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(250,250),
               maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
               compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
-#this took ~10 min on poseidon
+#this took >10 min on computer
 head(out)
 ```
 save(out, file="~/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
-#load("~/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
+save(out, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
+load("~/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
 load("~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/out_filterAndTrim.RData")
-
-
-###########################################################################################################
-#Dereplication
-
-ok there are some people on the internet doing dereplication before learn errors. This seems to be necessary, because when I went straight to learnErrors, I got the error: 
-    Error in derepFastq(fls[[i]], qualityType = qualityType) : 
-      Not all provided files exist.
-In this issue, someone did derepFastq before learnError. I'll see if it works for me, even though this person has an active question too. https://github.com/benjjneb/dada2/issues/1892
-
-```{r}
-derepFs <- derepFastq(filtFs, verbose=TRUE)
-derepRs <- derepFastq(filtRs, verbose=TRUE)
-# Name the derep-class objects by the sample names
-names(derepFs) <- sample.names
-names(derepRs) <- sample.names
-```
-
 
 
 ###########################################################################################################
@@ -172,29 +155,302 @@ errF <-learnErrors(filtFs, errorEstimationFunction=binnedQualErrfun, multi=FALSE
 
 errR <-learnErrors(filtRs, errorEstimationFunction=binnedQualErrfun, multi=FALSE)
 # 123698250 total bases in 494793 reads from 2 samples will be used for learning the error rates.
+```
+
+These two error objects seems very similar, so I want to check if they are the same. I didn't read super closely, but it looks like this might be common when dealing with binned quality scoring. See "monotonicity" in this discussion: https://github.com/benjjneb/dada2/issues/1307
+Because I am just going through dada2 to assess the preliminary data, I am going to skip this issue for now. I will circle back when I have the full data set sequenced. 
+
+```{r}
+#check if they are the same: 
+identical(errF, errR)
+#FALSE --> output is false, so it seems like they are behaving very similarly, but are not the same. 
 
 plotErrors(errF, nominalQ=TRUE)
-
-save(errF, file="~/EEID-PREDICT-Shallow/errF.RData")
-save(errR, file="~/EEID-PREDICT-Shallow/errR.RData")
-
+plotErrors(errR, nominalQ=TRUE)
 
 ```
-save(errF, file="~/EEID-PREDICT-Shallow/errF.RData")
-save(errR, file="~/EEID-PREDICT-Shallow/errR.RData")
+Woah actually these plot errors are pretty rough, so I htink I'll spend some time on this issue afterall. Shucks!
+
+```{r}
+#ave(errF, file="~/EEID-PREDICT-Shallow/errF.RData")
+#ave(errR, file="~/EEID-PREDICT-Shallow/errR.RData")
+
+save(errF, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/errF.RData")
+save(errR, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/errR.RData")
+```
 
 load("~/EEID-PREDICT-Shallow/errF.RData")
 load("~/EEID-PREDICT-Shallow/errR.RData")
 
+ok I am going to try using the loessErrfun(), which requires the trans object that is inside errF and errR
+https://www.rdocumentation.org/packages/dada2/versions/1.0.3/topics/loessErrfun
+See online discussion: 
+https://github.com/benjjneb/dada2/issues/2092
+```{r}
+errF_loess <- loessErrfun(errF$trans)
+errR_loess <- loessErrfun(errR$trans)
+
+
+plotErrors(errF_loess, nominalQ=TRUE)
+plotErrors(errR_loess, nominalQ=TRUE)
+```
+ok those errors are looking a little wonky, but a lot better. SO I am going to move forward!
+
+
+###########################################################################################################
+
+#Dereplication
+
+```{r}
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+```
+save(derepFs, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/derepF.RData")
+save(derepRs, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/derepRs.RData")
+
+
 
 ###########################################################################################################
 #Sample Inference
-- We are now ready to apply the core sample inference algorithm to the filtered and trimmed sequence data.
-- see: https://www.nature.com/articles/nmeth.3869#methods
+
 ```{r}
-dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
-dadaFs[[1]]
+dadaFs <- dada(derepFs, err=errF_loess , multithread=TRUE)
 ```
+
+```{r}
+dadaRs <- dada(derepRs, err=errR_loess , multithread=TRUE)
+```
+
+###########################################################################################################
+#Merge paired reads
+```{r}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+```
+
+
+###########################################################################################################
+#Construct sequence table
+```{r}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+# 116 41066
+```
+
+Inspect distribution of sequence lengths:
+Top row of output is the size of the sequence (we want 253), bottom row is how many of each length we have.
+So then I can cut out bad amplicons -- Cynthia usually cuts plus/minus two-ish from the mode.
+See "Considerations for your own data" in the tutorial.
+
+```{r}
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)))
+
+seqtab2 <- seqtab[,nchar(colnames(seqtab)) %in% 252:254]
+```
+
+
+###########################################################################################################
+# Remove chimeras
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab2, method="consensus", multithread=TRUE, verbose=TRUE)
+#  Identified 814 bimeras out of 40038 input sequences.
+
+dim(seqtab.nochim)
+#  116 39224
+sum(seqtab.nochim)/sum(seqtab2)
+#  0.9799914
+
+seqtab_final <- seqtab.nochim
+save(seqtab_final, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/seqtab_final.RData")
+```
+
+
+###########################################################################################################
+#Track reads through the pipeline
+- As a final check of our progress, we’ll look at the number of reads that made it through each step in the pipeline:
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+
+#                 input filtered denoisedF denoisedR merged nonchim
+# CoralWater_100 252164   247732    244381    244680 240462  236870
+# CoralWater_101 251174   247061    244732    244797 241495  237728
+# CoralWater_103 135603   133468    131133    131243 129345  127290
+# CoralWater_104 210306   206947    203938    204015 200715  197733
+# CoralWater_106 212020   208625    205627    205695 201843  198133
+# CoralWater_107 224968   222616    220440    220540 217973  214846
+
+
+track.df <- as.data.frame(track)
+
+track.df$dF_percent <- track.df$denoisedF/track.df$filtered
+track.df$dR_percent <- track.df$denoisedR/track.df$filtered
+track.df$merge_percent <- track.df$merged/track.df$denoisedF
+track.df$nochim_percent <- track.df$nonchim/track.df$merged
+head(track.df)
+
+#                input filtered denoisedF denoisedR merged nonchim dF_percent
+# CoralWater_100 252164   247732    244381    244680 240462  236870  0.9864733
+# CoralWater_101 251174   247061    244732    244797 241495  237728  0.9905732
+# CoralWater_103 135603   133468    131133    131243 129345  127290  0.9825052
+# CoralWater_104 210306   206947    203938    204015 200715  197733  0.9854600
+# CoralWater_106 212020   208625    205627    205695 201843  198133  0.9856297
+# CoralWater_107 224968   222616    220440    220540 217973  214846  0.9902253
+#                dR_percent merge_percent nochim_percent
+# CoralWater_100  0.9876802     0.9839636      0.9850621
+# CoralWater_101  0.9908363     0.9867733      0.9844013
+# CoralWater_103  0.9833293     0.9863650      0.9841123
+# CoralWater_104  0.9858321     0.9841962      0.9851431
+# CoralWater_106  0.9859557     0.9815977      0.9816194
+# CoralWater_107  0.9906745     0.9888087      0.9856542
+
+```
+
+
+###########################################################################################################
+#Assign taxonomy
+Assign taxonomy
+- download silva_nr_v132_train_set.fa.gz and silva_species_assignment_v132.fa.gz (https://zenodo.org/record/1172783) and put it in the FastQ_Data folder (inside another folder called Tax)
+
+```{r}
+taxa <- assignTaxonomy(seqtab_final, "~/Documents/WHOI/silva_nr99_v138.1_train_set.fa.gz", multithread=4)
+
+taxa <- addSpecies(taxa, "~/Documents/WHOI/silva_species_assignment_v138.1.fa.gz")
+
+save(taxa, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/taxa.RData")
+```
+
+
+```{r}
+#Let’s inspect the taxonomic assignments:
+taxa.print <- taxa 
+rownames(taxa.print) <- NULL # Removing sequence rownames for display only
+head(taxa.print)
+```
+
+Replace the NAs with "unknown"
+```{r}
+#Replace the NAs with "unknown"
+taxa_df <- as.data.frame(taxa)
+dim(taxa_df) #39224    7
+taxa_NA_is_Unknown <- taxa_df %>%
+  mutate_all(~ ifelse(is.na(.), "unknown", .))
+View(taxa_NA_is_Unknown)
+```
+
+
+Replacing NAs with the lowest taxonomic level (Code from Anya)
+```{r}
+#Replacing NAs with the lowest taxonomic level (Code from Anya)
+#replace NAs with the deepest taxonomy available
+taxa_NA_is_LowestTax <- taxa_df
+taxa_NA_is_LowestTax$Kingdom <- as.character(taxa_NA_is_LowestTax$Kingdom)
+king_na <- which(is.na(taxa_NA_is_LowestTax$Kingdom))
+taxa_NA_is_LowestTax[king_na, "Kingdom"] <- 'Unknown'
+
+taxa_NA_is_LowestTax$Phylum <- as.character(taxa_NA_is_LowestTax$Phylum)
+phy_na <- which(is.na(taxa_NA_is_LowestTax$Phylum))
+taxa_NA_is_LowestTax[phy_na, "Phylum"] <- taxa_NA_is_LowestTax$Kingdom[phy_na] 
+
+taxa_NA_is_LowestTax$Class <- as.character(taxa_NA_is_LowestTax$Class)
+cl_na <- which(is.na(taxa_NA_is_LowestTax$Class))
+taxa_NA_is_LowestTax[cl_na, "Class"] <- taxa_NA_is_LowestTax$Phylum[cl_na]
+
+taxa_NA_is_LowestTax$Order <- as.character(taxa_NA_is_LowestTax$Order)
+ord_na <- which(is.na(taxa_NA_is_LowestTax$Order))
+taxa_NA_is_LowestTax[ord_na, "Order"] <- taxa_NA_is_LowestTax$Class[ord_na]
+
+taxa_NA_is_LowestTax$Family <- as.character(taxa_NA_is_LowestTax$Family)
+fam_na <- which(is.na(taxa_NA_is_LowestTax$Family))
+taxa_NA_is_LowestTax[fam_na, "Family"] <- taxa_NA_is_LowestTax$Order[fam_na]
+
+taxa_NA_is_LowestTax$Genus <- as.character(taxa_NA_is_LowestTax$Genus)
+gen_na <- which(is.na(taxa_NA_is_LowestTax$Genus))
+taxa_NA_is_LowestTax[gen_na, "Genus"] <- taxa_NA_is_LowestTax$Family[gen_na]
+
+taxa_NA_is_LowestTax$Species <- as.character(taxa_NA_is_LowestTax$Species)
+spec_na <- which(is.na(taxa_NA_is_LowestTax$Species))
+taxa_NA_is_LowestTax[spec_na, "Species"] <- taxa_NA_is_LowestTax$Genus[spec_na]
+
+View(taxa_NA_is_LowestTax)
+```
+
+save(taxa_NA_is_Unknown, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/taxa_NA_is_Unknown.RData")
+
+save(taxa_NA_is_LowestTax, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/taxa_NA_is_LowestTax.RData")
+open("~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/taxa_NA_is_LowestTax.RData")
+
+###########################################################################################################
+Evaluate accuracy. Downlaod reference fasta for mock community here: https://github.com/itsmisterbrown/microfiltR/blob/master/HMP_MOCK.v35.fasta
+```{r}
+#set new path to mock reference file, because it isn't in FastQ_Data 
+path <-  "~/Documents/WHOI" 
+
+#Check for Library Z2
+unqs.mock <- seqtab_final["Mock_TATAGCGA-GTCTCGTA",]
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE) # Drop ASVs absent in the Mock
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+  #DADA2 inferred 56 sample sequences present in the Mock community.
+
+mock.ref <- getSequences(file.path(path, "HMP_MOCK.v35.fasta"))
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+  # Of those, 22 were exact matches to the expected reference sequences.
+
+#Check for Library B3
+unqs.mock <- seqtab_final["Mock_GTCTATGA-CGAGACGT",]
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE) # Drop ASVs absent in the Mock
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+  #DADA2 inferred 194 sample sequences present in the Mock community.
+
+mock.ref <- getSequences(file.path(path, "HMP_MOCK.v35.fasta"))
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+  #Of those, 21 were exact matches to the expected reference sequences.
+ 
+```
+that's a lot more inferred sequences than matches.... will bring this up to the lab
+
+
+
+###########################################################################################################
+From Cynthia: 
+#Make ASV tables and taxonomy files
+Make sure the seqtab_final file with all the ASVs and the taxa are all in the same order. Save the sequences with an ASV# identifier.
+```{r}
+otus <- seqtab_final
+taxonomy <- taxa_NA_is_LowestTax
+
+idx <- match(rownames(taxonomy), colnames(otus))
+#looks like they were all aligned, but doesn't hurt just to make it very safe.
+otus <- otus[,idx]
+
+#save a dataframe with a new ASV identifier and the sequence from the rownames for taxa
+ASVseqs <- data.frame("ASV_ID" = paste0("ASV", seq(from = 1, to = ncol(seqtab_final), by = 1)), "sequence" = rownames(taxonomy))
+
+
+#rename otu and taxa dataframe so they are easier to interpret
+colnames(otus) <- ASVseqs$ASV_ID
+rownames(taxonomy) <- ASVseqs$ASV_ID
+```
+
+#Save final tables
+Write these tables so you have them for future data analysis
+```{r}
+save(otus, file="~/Documents/WHOI/Projects/EEID-PREDICT-Shallow/otus_WaterPrelim_final.RData")
+write.table(taxonomy, file = "taxonomy_WaterPrelim_final.txt", sep = "\t", row.names = TRUE, col.names = TRUE)
+write.table(ASVseqs, file = "ASVsequences_WaterPrelim_final.txt", sep = "\t", row.names = TRUE, col.names = TRUE)
+```
+
 
 
 
